@@ -1,0 +1,7 @@
+# Create New Service
+--------------------
+- nssm install NamaServiceBaru (run in nssm.exe dir)
+
+# Available Services List
+-------------------------
+- AttLogServer1 -> Mesin 1
