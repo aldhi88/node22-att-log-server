@@ -1,8 +1,116 @@
-const cron = require('node-cron');
 const config = require('./config');
-const { initDB, getLastSyncTime, bulkInsertLogs } = require('./db');
-const { fetchOneBatch } = require('./deviceApi');
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = config.tlsRejectUnauthorized ? "1" : "0";
 
+const cron = require('node-cron');
+const fs = require('fs');
+const { fetchOneBatch } = require('./deviceApi');
+const axios = require('axios');
+const moment = require('moment');
+
+const lastSyncFile = './last_time_index.txt';
+
+// Fungsi untuk membaca lastSyncTime dari file
+function getLastSyncTimeFromFile() {
+  if (fs.existsSync(lastSyncFile)) {
+    return fs.readFileSync(lastSyncFile, 'utf8').trim();
+  }
+  return null;
+}
+
+// Fungsi untuk menyimpan lastSyncTime ke file dengan pengecekan
+function saveLastSyncTime(time) {
+  try {
+    if (!time) {
+      console.warn("[WARN] Tidak ada lastSyncTime yang valid untuk disimpan.");
+      return;
+    }
+
+    const lastTimeFromFile = getLastSyncTimeFromFile();
+
+    // Simpan hanya jika waktu baru lebih besar dari yang lama
+    if (lastTimeFromFile && moment(time).isBefore(moment(lastTimeFromFile))) {
+      console.log(`[INFO] Waktu baru (${time}) lebih lama dari yang ada di file (${lastTimeFromFile}). Tidak diperbarui.`);
+      return;
+    }
+
+    fs.writeFileSync(lastSyncFile, time, 'utf8');
+    console.log(`[INFO] Last sync time berhasil disimpan: ${time}`);
+
+  } catch (error) {
+    console.error(`[ERROR] Gagal menyimpan lastSyncTime: ${error.message}`);
+  }
+}
+
+// Fungsi untuk mendapatkan lastSyncTime dari API jika file tidak ada
+async function getLastSyncTime() {
+  const lastTimeFromFile = getLastSyncTimeFromFile();
+  if (lastTimeFromFile) {
+    return lastTimeFromFile;
+  }
+
+  try {
+    const response = await axios.get(`${config.apiBaseUrl}/log/attendance/get-lastest-time/${config.machineCode}`, {
+      headers: {
+        Accept: "application/json",
+        "X-API-KEY": config.apiSecretKey
+      }
+    });
+
+    if ((response.status === 200 || response.status === 201) && response.data.lastSyncTime) {
+      saveLastSyncTime(response.data.lastSyncTime);
+      return response.data.lastSyncTime;
+    }
+  } catch (error) {
+    console.error("[ERROR] Gagal mengambil lastSyncTime dari API:", error.message);
+  }
+
+  return null;
+}
+
+// Fungsi untuk mengirimkan data log ke API
+async function sendLogsToAPI(logs) {
+  console.log(`[DEBUG] sendLogsToAPI dipanggil, jumlah logs: ${logs.length}`);
+
+  if (!logs.length) {
+    console.warn("[WARN] Tidak ada logs yang dikirim ke API.");
+    return;
+  }
+
+  const payload = {
+    attendances: logs.map(event => ({
+      data_employee_id: parseInt(event.employeeNoString, 10) || null,
+      master_machine_id: config.machineCode,
+      master_minor_id: event.minor ?? null,
+      name: event.name ?? null,
+      time: moment(event.time).format("YYYY-MM-DD HH:mm:ss"),
+      created_at: moment().format("YYYY-MM-DD HH:mm:ss"),
+      updated_at: moment().format("YYYY-MM-DD HH:mm:ss")
+    }))
+  };
+
+  try {
+    const response = await axios.post(`${config.apiBaseUrl}/log/attendance/store`, payload, {
+      headers: {
+        Accept: "application/json",
+        "X-API-KEY": config.apiSecretKey
+      }
+    });
+
+    if (response.status === 200 || response.status === 201) {
+      console.log("[INFO] Data berhasil dikirim ke API.");
+      const lastTime = logs[logs.length - 1]?.time || null;
+      if (lastTime) {
+        saveLastSyncTime(lastTime);
+      } else {
+        console.warn("[WARN] Tidak ada waktu terakhir yang bisa disimpan.");
+      }
+    }
+  } catch (error) {
+    console.error("[ERROR] Gagal mengirim data ke API:", error.response?.data || error.message);
+  }
+}
+
+// Proses pengambilan data per minor
 async function processMinor(minor, startTime, endTime, useBuffering) {
   let offset = 0;
   let fetchCount = 0;
@@ -10,7 +118,16 @@ async function processMinor(minor, startTime, endTime, useBuffering) {
 
   while (true) {
     const { results, isMore, httpStatus } = await fetchOneBatch(minor, startTime, endTime, offset);
-    if (httpStatus !== 200 || results.length === 0) break; // Hentikan jika tidak ada data atau terjadi error
+    if (httpStatus !== 200 || results.length === 0) {
+      console.warn(`[WARN] Minor ${minor}: fetchOneBatch gagal atau tidak ada data.`);
+      break;
+    }
+
+    // Hapus data pertama jika memiliki time yang sama dengan lastSyncTime
+    if (results.length > 0 && results[0].time === startTime) {
+      console.log(`[INFO] Menghapus duplikasi log dengan time: ${startTime}`);
+      results.shift();  // Hapus data pertama
+    }
 
     bufferData.push(...results);
     fetchCount++;
@@ -19,20 +136,14 @@ async function processMinor(minor, startTime, endTime, useBuffering) {
 
     if (useBuffering) {
       if (fetchCount >= config.fetchBeforeInsert) {
-        // Hitung ukuran data sebelum insert
-        const sizeInBytes = Buffer.byteLength(JSON.stringify(bufferData), 'utf8');
-        const sizeInMB = (sizeInBytes / (1024 * 1024)).toFixed(2);
-
-        console.log(`- ${minor} fetch ${fetchCount} ->bulk insert (Size: ${sizeInMB} MB, Rows: ${bufferData.length})`);
-        await bulkInsertLogs(bufferData);
-
-        bufferData = []; // Kosongkan buffer setelah insert
-        fetchCount = 0;  // Reset fetch count setelah bulk insert
-        console.log(`- ${minor} bulk insert selesai, buffer dikosongkan, fetchCount di-reset.`);
+        console.log(`- ${minor} fetch ${fetchCount} ->bulk insert (Rows: ${bufferData.length})`);
+        await sendLogsToAPI(bufferData);
+        bufferData = [];
+        fetchCount = 0;
       }
     } else {
       console.log(`- ${minor} fetch ${fetchCount} ->bulk insert`);
-      await bulkInsertLogs(results);
+      await sendLogsToAPI(results);
     }
 
     offset += results.length;
@@ -40,25 +151,22 @@ async function processMinor(minor, startTime, endTime, useBuffering) {
   }
 
   if (useBuffering && bufferData.length > 0) {
-    // Hitung ukuran data terakhir
-    const sizeInBytes = Buffer.byteLength(JSON.stringify(bufferData), 'utf8');
-    const sizeInMB = (sizeInBytes / (1024 * 1024)).toFixed(2);
-
-    console.log(`- ${minor} fetch terakhir ->bulk insert (Size: ${sizeInMB} MB, Rows: ${bufferData.length})`);
-    await bulkInsertLogs(bufferData);
+    console.log(`- ${minor} last fetch ->bulk insert (Rows: ${bufferData.length})`);
+    await sendLogsToAPI(bufferData);
   }
 }
 
+// Sinkronisasi awal saat aplikasi pertama kali dijalankan
 async function firstRunSync() {
   try {
     console.log("[INFO] Memulai FIRST RUN sinkronisasi");
 
     const lastSyncTime = await getLastSyncTime();
-    let startTime = lastSyncTime ? formatDateMinusOneMinute(lastSyncTime) : "2025-01-01T00:00:00+07:00";
-    const endTime = getLocalISOStringNoMillis();
+    let startTime = lastSyncTime || config.defaultStartTime;;
+    const endTime = moment().format("YYYY-MM-DDTHH:mm:ss+07:00");
 
-    for (const minor of [38, 75]) {
-      console.log(`+ sesi ${minor}`);
+    for (const minor of config.minorValues) {
+      console.log(`+ session ${minor}`);
       await processMinor(minor, startTime, endTime, true);
     }
 
@@ -69,14 +177,15 @@ async function firstRunSync() {
   }
 }
 
+// Sinkronisasi berkala dengan cron job
 async function cronSync() {
   try {
     const lastSyncTime = await getLastSyncTime();
-    let startTime = lastSyncTime ? formatDateMinusOneMinute(lastSyncTime) : getLocalISOStringNoMillis();
-    const endTime = getLocalISOStringNoMillis();
+    let startTime = lastSyncTime || moment().format("YYYY-MM-DDTHH:mm:ss+07:00");
+    const endTime = moment().format("YYYY-MM-DDTHH:mm:ss+07:00");
 
-    for (const minor of [38, 75]) {
-      console.log(`+ sesi ${minor} (cron)`);
+    for (const minor of config.minorValues) {
+      console.log(`+ session ${minor} (cron)`);
       await processMinor(minor, startTime, endTime, false);
     }
   } catch (err) {
@@ -84,24 +193,15 @@ async function cronSync() {
   }
 }
 
+
+// Memulai cron job
 function startCronSync() {
   cron.schedule(config.schedule, cronSync);
 }
 
+// Menjalankan aplikasi
 async function main() {
-  await initDB();
   await firstRunSync();
 }
 
 main().catch(err => console.error(`[ERROR] main: ${err.message}`));
-
-function formatDateMinusOneMinute(dbTimeString) {
-  const dateObj = new Date(dbTimeString);
-  dateObj.setMinutes(dateObj.getMinutes() - 1);
-  return getLocalISOStringNoMillis(dateObj);
-}
-
-function getLocalISOStringNoMillis(dateObj = new Date()) {
-  const pad = (n) => n.toString().padStart(2, '0');
-  return `${dateObj.getFullYear()}-${pad(dateObj.getMonth() + 1)}-${pad(dateObj.getDate())}T${pad(dateObj.getHours())}:${pad(dateObj.getMinutes())}:${pad(dateObj.getSeconds())}+07:00`;
-}
