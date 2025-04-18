@@ -1,7 +1,14 @@
 # Create New Service
 --------------------
 - nssm install NamaServiceBaru (run in nssm.exe dir, only CMD)
-- muncul window, path to node.exe, dir to app dir, argument to app file 
+- show window, path to node.exe, dir to app dir, argument to app file 
+- in log on tab, choose Local System account, and check Allow service interact with desktop
+- in I/O tab, output choose log dir, and type your log file.log
+- Install Service
+- Go to service windows, find your service name, right click - properties - set automatic (delay start) 
+- dont forget set .env your app 
+- dont forget to delete time record file 
+- restart pc
 
 # Available Services List
 -------------------------
