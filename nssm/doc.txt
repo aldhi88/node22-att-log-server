@@ -1,6 +1,7 @@
 # Create New Service
 --------------------
-- nssm install NamaServiceBaru (run in nssm.exe dir)
+- nssm install NamaServiceBaru (run in nssm.exe dir, only CMD)
+- muncul window, path to node.exe, dir to app dir, argument to app file 
 
 # Available Services List
 -------------------------
