@@ -20,19 +20,24 @@ function getLastSyncTimeFromFile() {
 // Fungsi untuk menyimpan lastSyncTime ke file dengan pengecekan
 function saveLastSyncTime(time) {
   try {
-    if (!time) {
-      console.warn("[WARN] Tidak ada lastSyncTime yang valid untuk disimpan.");
+    // Validasi awal
+    if (
+      !time ||                         // null / undefined / kosong
+      time.toUpperCase?.() === "NULL"  // string "NULL"
+    ) {
+      console.warn("[WARN] lastSyncTime tidak valid, tidak disimpan:", time);
       return;
     }
 
     const lastTimeFromFile = getLastSyncTimeFromFile();
 
-    // Simpan hanya jika waktu baru lebih besar dari yang lama
+    // Jangan simpan kalau lebih kecil dari waktu lama
     if (lastTimeFromFile && moment(time).isBefore(moment(lastTimeFromFile))) {
       console.log(`[INFO] Waktu baru (${time}) lebih lama dari yang ada di file (${lastTimeFromFile}). Tidak diperbarui.`);
       return;
     }
 
+    // Simpan kalau valid
     fs.writeFileSync(lastSyncFile, time, 'utf8');
     console.log(`[INFO] Last sync time berhasil disimpan: ${time}`);
 
@@ -40,6 +45,7 @@ function saveLastSyncTime(time) {
     console.error(`[ERROR] Gagal menyimpan lastSyncTime: ${error.message}`);
   }
 }
+
 
 // Fungsi untuk mendapatkan lastSyncTime dari API jika file tidak ada
 async function getLastSyncTime() {
