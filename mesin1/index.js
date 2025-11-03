@@ -20,31 +20,34 @@ function getLastSyncTimeFromFile() {
 // Fungsi untuk menyimpan lastSyncTime ke file dengan pengecekan
 function saveLastSyncTime(time) {
   try {
-    // Validasi awal
-    if (
-      !time ||                         // null / undefined / kosong
-      time.toUpperCase?.() === "NULL"  // string "NULL"
-    ) {
+    // Lewati jika kosong atau null
+    if (!time || /^null$/i.test(time)) {
       console.warn("[WARN] lastSyncTime tidak valid, tidak disimpan:", time);
       return;
     }
 
-    const lastTimeFromFile = getLastSyncTimeFromFile();
-
-    // Jangan simpan kalau lebih kecil dari waktu lama
-    if (lastTimeFromFile && moment(time).isBefore(moment(lastTimeFromFile))) {
-      console.log(`[INFO] Waktu baru (${time}) lebih lama dari yang ada di file (${lastTimeFromFile}). Tidak diperbarui.`);
+    // Pastikan format waktu valid (mis. 2025-10-24T23:27:13+07:00)
+    const mNew = moment(time, moment.ISO_8601, true);
+    if (!mNew.isValid()) {
+      console.warn("[WARN] Format waktu tidak valid, abaikan:", time);
       return;
     }
 
-    // Simpan kalau valid
-    fs.writeFileSync(lastSyncFile, time, 'utf8');
-    console.log(`[INFO] Last sync time berhasil disimpan: ${time}`);
+    const lastTimeFromFile = getLastSyncTimeFromFile();
+    if (lastTimeFromFile && moment(mNew).isBefore(moment(lastTimeFromFile))) {
+      console.log(`[INFO] Waktu baru (${time}) lebih lama dari file (${lastTimeFromFile}), abaikan.`);
+      return;
+    }
 
+    // Simpan waktu (format sesuai permintaan)
+    const normalized = mNew.format("YYYY-MM-DDTHH:mm:ssZ");
+    fs.writeFileSync(lastSyncFile, normalized, "utf8");
+    console.log(`[INFO] Last sync time disimpan: ${normalized}`);
   } catch (error) {
     console.error(`[ERROR] Gagal menyimpan lastSyncTime: ${error.message}`);
   }
 }
+
 
 
 // Fungsi untuk mendapatkan lastSyncTime dari API jika file tidak ada
